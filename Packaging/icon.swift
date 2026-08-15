@@ -21,13 +21,13 @@ guard let srcImage = NSImage(contentsOfFile: SRC),
 let ciCtx = CIContext()
 var ci = CIImage(cgImage: rawCG)
 ci = ci.applyingFilter("CIColorControls", parameters: [
-    kCIInputContrastKey: 1.55,     // >1 pushes lights up, darks down around 0.5
-    kCIInputBrightnessKey: 0.04,
-    kCIInputSaturationKey: 0.85
+    kCIInputContrastKey: 1.18,     // gentle lift, keeps midtones intact
+    kCIInputBrightnessKey: 0.05,
+    kCIInputSaturationKey: 0.35     // pull most of the red out toward neutral grey
 ])
 ci = ci.applyingFilter("CIUnsharpMask", parameters: [
-    kCIInputRadiusKey: 2.2,
-    kCIInputIntensityKey: 0.6
+    kCIInputRadiusKey: 2.0,
+    kCIInputIntensityKey: 0.45
 ])
 guard let cg = ciCtx.createCGImage(ci, from: ci.extent) else {
     fputs("error: contrast pass failed\n", stderr); exit(1)
