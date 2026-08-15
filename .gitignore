@@ -1,0 +1,15 @@
+# Build artifacts
+.build/
+build/
+Packaging/icon_1024.png
+
+# macOS
+.DS_Store
+
+# Xcode / SwiftPM
+*.xcodeproj
+*.xcworkspace
+Package.resolved
+
+# Local alias to the installed iPhone-app bundle (machine-specific)
+Blackmagic Cam
