@@ -6,13 +6,31 @@
 //   • aspect-FIT the full image on top so no lettering is cropped.
 // Run: `swift Packaging/icon.swift` → writes Packaging/icon_1024.png
 import AppKit
+import CoreImage
 
 let SRC = "Packaging/IMG_0530.png"
 let size: CGFloat = 1024
 
 guard let srcImage = NSImage(contentsOfFile: SRC),
-      let cg = srcImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+      let rawCG = srcImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
     fputs("error: could not load \(SRC)\n", stderr); exit(1)
+}
+
+// Sharpen contrast: the artwork is dark-on-dark, so pivot around mid-gray to
+// lift the background and deepen the ink, then add a touch of unsharp mask.
+let ciCtx = CIContext()
+var ci = CIImage(cgImage: rawCG)
+ci = ci.applyingFilter("CIColorControls", parameters: [
+    kCIInputContrastKey: 1.55,     // >1 pushes lights up, darks down around 0.5
+    kCIInputBrightnessKey: 0.04,
+    kCIInputSaturationKey: 0.85
+])
+ci = ci.applyingFilter("CIUnsharpMask", parameters: [
+    kCIInputRadiusKey: 2.2,
+    kCIInputIntensityKey: 0.6
+])
+guard let cg = ciCtx.createCGImage(ci, from: ci.extent) else {
+    fputs("error: contrast pass failed\n", stderr); exit(1)
 }
 let iw = CGFloat(cg.width), ih = CGFloat(cg.height)
 
