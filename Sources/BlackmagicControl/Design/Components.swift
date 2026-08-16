@@ -182,6 +182,103 @@ struct PickerTile: View {
     }
 }
 
+/// A small on/off switch used in tile headers.
+struct MiniToggle: View {
+    let isOn: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Capsule()
+                .fill(isOn ? Theme.accent : Theme.inset)
+                .frame(width: 26, height: 15)
+                .overlay(Capsule().strokeBorder(isOn ? .clear : Theme.stroke, lineWidth: 1))
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle().fill(.white).frame(width: 11, height: 11).padding(2)
+                }
+        }
+        .buttonStyle(.plain)
+        .animation(.snappy(duration: 0.15), value: isOn)
+    }
+}
+
+/// The list of options shown in a picker popover (shared by PickerTile and
+/// ToggleMenuTile). Calls `onSelect` then `dismiss` on tap.
+struct OptionList: View {
+    let options: [String]
+    var current: String? = nil
+    let onSelect: (String) -> Void
+    var dismiss: (() -> Void)? = nil
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(options, id: \.self) { opt in
+                    Button { onSelect(opt); dismiss?() } label: {
+                        HStack {
+                            Text(opt).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                            Spacer()
+                            if current == opt {
+                                Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(current == opt ? Theme.inset : Color.clear)
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(width: 220, height: min(CGFloat(options.count) * 33 + 10, 340))
+    }
+}
+
+/// A tile with an on/off switch (top-right) plus a tappable value that opens a
+/// popover of options — used for Frame Lines, Frame Grids, Safe Area. The `menu`
+/// builder receives a `dismiss` closure so option taps can close the popover.
+struct ToggleMenuTile<Menu: View>: View {
+    let caption: String
+    let value: String
+    var unit: String? = nil
+    var valueSize: CGFloat = 18
+    let isOn: Bool
+    let onToggle: () -> Void
+    @ViewBuilder var menu: (@escaping () -> Void) -> Menu
+
+    @State private var show = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(caption).controlLabelStyle().lineLimit(1).minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 18)   // keep clear of the corner dot / switch
+            Spacer(minLength: 2)
+            Button { show = true } label: {
+                HStack(alignment: .lastTextBaseline, spacing: 3) {
+                    Text(value.isEmpty ? "—" : value)
+                        .font(.readout(valueSize))
+                        .foregroundStyle(isOn ? Theme.textPrimary : Theme.textTertiary)
+                    if let unit { Text(unit).font(.readout(valueSize * 0.7)).foregroundStyle(Theme.textSecondary) }
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.textTertiary)
+                }
+                .lineLimit(1).minimumScaleFactor(0.55)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $show, arrowEdge: .bottom) { menu({ show = false }).background(Theme.panel) }
+            Spacer(minLength: 2)
+        }
+        .padding(.vertical, 12).padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, minHeight: 78)
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: Theme.tileCorner, style: .continuous))
+        .overlay(alignment: .topLeading) {
+            if isOn { Circle().fill(Theme.accent).frame(width: 6, height: 6).padding(8) }
+        }
+        .overlay(alignment: .topTrailing) {
+            MiniToggle(isOn: isOn, action: onToggle).padding(6)
+        }
+    }
+}
+
 /// A titled panel container used for grouped sections (WB sliders, presets…).
 /// Optionally collapsible — a chevron on the right toggles the content
 /// (down = open, right = collapsed).

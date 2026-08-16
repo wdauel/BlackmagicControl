@@ -40,6 +40,8 @@ final class CameraController: ObservableObject, Identifiable {
     @Published var shutterAngle: Double = 180
     @Published var shutterSpeed: Int? = nil
     @Published var shutterIsAngleScaled = false        // firmware scale (÷100) discovered on read
+    @Published var shutterMeasurement = "ShutterAngle" // "ShutterAngle" | "ShutterSpeed"
+    @Published var supportedShutterSpeeds: [Int] = []
     @Published var ndStop: Double? = nil
 
     // Lens
@@ -47,6 +49,7 @@ final class CameraController: ObservableObject, Identifiable {
     @Published var irisNormalised: Double = 0.5
     @Published var focusNormalised: Double = 1.0
     @Published var afActive = false            // true briefly while an AF pass runs
+    @Published var ois = false                 // optical image stabilization
     @Published var focalLength: Int = 24        // selected lens, in mm
 
     // Transport
@@ -71,9 +74,6 @@ final class CameraController: ObservableObject, Identifiable {
     @Published var dynamicRange: String = ""
     @Published var supportedDynamicRanges: [String] = []
 
-    // Recording tools
-    @Published var proxyRecording = false
-
     // Monitoring / tools
     @Published var falseColor = false
     @Published var focusAssist = false
@@ -81,6 +81,12 @@ final class CameraController: ObservableObject, Identifiable {
     @Published var frameGuide = false
     @Published var frameGuideRatio = ""
     @Published var frameGuidePresets: [String] = []
+    // More overlays
+    @Published var frameGrids = false
+    @Published var gridType = "Thirds"
+    @Published var safeArea = false
+    @Published var safeAreaPercent = 90
+    @Published var displayLUT = false
     private var monitorDisplay = "Device"
     private var zebraRaw = ZebraValue(skinTone: ZebraBand(type: "None", level: nil, enabled: false),
                                       highlight: ZebraBand(type: nil, level: 85, enabled: false))
@@ -188,6 +194,7 @@ final class CameraController: ObservableObject, Identifiable {
     func refreshAll() async {
         guard let c = client else { return }
         if let info = try? await c.ping() { applySystem(info) }
+        if let prod = try? await c.get(Endpoint.systemProduct, as: SystemProduct.self), let n = prod.productName { deviceName = n }
         if let v = try? await c.get(Endpoint.iso, as: ISOValue.self) { iso = v.iso }
         if let v = try? await c.get(Endpoint.whiteBalance, as: WhiteBalanceValue.self) { whiteBalance = v.whiteBalance }
         if let v = try? await c.get(Endpoint.whiteBalanceTint, as: WhiteBalanceTintValue.self) { tint = v.whiteBalanceTint }
@@ -198,12 +205,14 @@ final class CameraController: ObservableObject, Identifiable {
             }
             shutterSpeed = s.shutterSpeed
         }
+        if let m = try? await c.get(Endpoint.shutterMeasurement, as: ShutterMeasurement.self) { shutterMeasurement = m.measurement }
         if let i = try? await c.get(Endpoint.iris, as: IrisValue.self) {
             if let f = i.apertureStop { irisFStop = f }
             else if let n = i.apertureNumber { irisFStop = n / 100 }
             if let n = i.normalised { irisNormalised = n }
         }
         if let f = try? await c.get(Endpoint.focus, as: FocusValue.self) { focusNormalised = f.normalised }
+        if let o = try? await c.get(Endpoint.ois, as: EnabledValue.self) { ois = o.enabled }
         if let z = try? await c.get(Endpoint.zoom, as: ZoomValue.self), let mm = z.focalLength { focalLength = mm }
         if let r = try? await c.get(Endpoint.record, as: RecordState.self) { isRecording = r.recording }
         if let ae = try? await c.get(Endpoint.autoExposure, as: AutoExposureValue.self), let m = ae.mode { aeMode = m }
@@ -230,7 +239,6 @@ final class CameraController: ObservableObject, Identifiable {
         }
 
         // Recording tools + monitoring
-        if let pr = try? await c.get(Endpoint.proxyRecording, as: EnabledValue.self) { proxyRecording = pr.enabled }
         if let disp = try? await c.get(Endpoint.monitoringDisplay, as: MonitoringDisplays.self), let first = disp.displays.first {
             monitorDisplay = first
         }
@@ -240,6 +248,11 @@ final class CameraController: ObservableObject, Identifiable {
         if let zb = try? await c.get(Endpoint.zebra, as: ZebraValue.self) { zebraRaw = zb; zebra = zb.highlight?.enabled ?? false }
         if let fg = try? await c.get(Endpoint.frameGuideRatio, as: FrameGuideRatioValue.self) { frameGuideRatio = fg.ratio }
         if let fgp = try? await c.get(Endpoint.frameGuidePresets, as: FrameGuidePresets.self) { frameGuidePresets = fgp.presets }
+        if let fgr = try? await c.get(Endpoint.frameGridsDisplay(monitorDisplay), as: EnabledValue.self) { frameGrids = fgr.enabled }
+        if let gt = try? await c.get(Endpoint.frameGridsGlobal, as: FrameGridsValue.self) { gridType = gt.frameGrids.first ?? "Thirds" }
+        if let sa = try? await c.get(Endpoint.safeAreaDisplay(monitorDisplay), as: EnabledValue.self) { safeArea = sa.enabled }
+        if let sp = try? await c.get(Endpoint.safeAreaPercent, as: SafeAreaPercentValue.self) { safeAreaPercent = sp.percent }
+        if let lut = try? await c.get(Endpoint.displayLUT(monitorDisplay), as: EnabledValue.self) { displayLUT = lut.enabled }
 
         // Color correction
         if let v = try? await c.get(Endpoint.ccLift, as: ColorRGBL.self) { ccLift = v }
@@ -337,9 +350,9 @@ final class CameraController: ObservableObject, Identifiable {
         if let iso = try? await c.get(Endpoint.supportedISOs, as: SupportedISOs.self) {
             supportedISOs = iso.supportedISOs
         }
-        if let sh = try? await c.get(Endpoint.supportedShutters, as: SupportedShutters.self),
-           let angles = sh.shutterAngles {
-            supportedShutterAngles = angles.sorted()
+        if let sh = try? await c.get(Endpoint.supportedShutters, as: SupportedShutters.self) {
+            if let angles = sh.shutterAngles { supportedShutterAngles = angles.sorted() }
+            if let speeds = sh.shutterSpeeds { supportedShutterSpeeds = speeds.map { Int($0) }.sorted() }
         }
     }
 
@@ -500,6 +513,20 @@ final class CameraController: ObservableObject, Identifiable {
         push { try await $0.put(Endpoint.shutter, ShutterValue(shutterSpeed: nil, shutterAngle: raw)) }
     }
 
+    func setShutterSpeed(_ denom: Int) {
+        shutterSpeed = denom
+        push { try await $0.put(Endpoint.shutter, ShutterValue(shutterSpeed: denom, shutterAngle: nil)) }
+    }
+
+    /// Switch the camera's shutter readout between angle (180°) and speed (1/50).
+    func setShutterMeasurement(_ measurement: String) {
+        shutterMeasurement = measurement
+        push {
+            try await $0.put(Endpoint.shutterMeasurement, ShutterMeasurement(measurement: measurement))
+            await self.refreshSupportedExposure()
+        }
+    }
+
     func setIris(normalised n: Double) {
         irisNormalised = n
         push { try await $0.put(Endpoint.iris, IrisValue(normalised: n, apertureStop: nil, apertureNumber: nil, continuousApertureAutoExposure: nil)) }
@@ -508,6 +535,12 @@ final class CameraController: ObservableObject, Identifiable {
     func setFocus(normalised n: Double) {
         focusNormalised = n
         push { try await $0.put(Endpoint.focus, FocusValue(normalised: n)) }
+    }
+
+    /// Optical image stabilization on/off.
+    func setOIS(_ on: Bool) {
+        ois = on
+        push { try await $0.put(Endpoint.ois, EnabledValue(enabled: on)) }
     }
 
     func toggleRecord() {
@@ -533,10 +566,6 @@ final class CameraController: ObservableObject, Identifiable {
         dynamicRange = v
         push { try await $0.put(Endpoint.dynamicRange, DynamicRangeValue(dynamicRange: v)) }
     }
-    func setProxyRecording(_ on: Bool) {
-        proxyRecording = on
-        push { try await $0.put(Endpoint.proxyRecording, EnabledValue(enabled: on)) }
-    }
     func setFalseColor(_ on: Bool) {
         falseColor = on
         push { try await $0.put(Endpoint.falseColor(self.monitorDisplay), EnabledValue(enabled: on)) }
@@ -558,6 +587,26 @@ final class CameraController: ObservableObject, Identifiable {
     func setFrameGuideRatio(_ ratio: String) {
         frameGuideRatio = ratio
         push { try await $0.put(Endpoint.frameGuideRatio, FrameGuideRatioValue(ratio: ratio)) }
+    }
+    func setFrameGrids(_ on: Bool) {
+        frameGrids = on
+        push { try await $0.put(Endpoint.frameGridsDisplay(self.monitorDisplay), EnabledValue(enabled: on)) }
+    }
+    func setGridType(_ type: String) {
+        gridType = type
+        push { try await $0.put(Endpoint.frameGridsGlobal, FrameGridsValue(frameGrids: [type])) }
+    }
+    func setSafeArea(_ on: Bool) {
+        safeArea = on
+        push { try await $0.put(Endpoint.safeAreaDisplay(self.monitorDisplay), EnabledValue(enabled: on)) }
+    }
+    func setSafeAreaPercent(_ p: Int) {
+        safeAreaPercent = p
+        push { try await $0.put(Endpoint.safeAreaPercent, SafeAreaPercentValue(percent: p)) }
+    }
+    func setDisplayLUT(_ on: Bool) {
+        displayLUT = on
+        push { try await $0.put(Endpoint.displayLUT(self.monitorDisplay), EnabledValue(enabled: on)) }
     }
 
     // MARK: Format

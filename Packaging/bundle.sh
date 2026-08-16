@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 APP_NAME="BlackmagicControl"
 DISPLAY_NAME="Blackmagic Control"
 BUNDLE_ID="com.dauel.blackmagiccontrol"
-VERSION="3.7"
+VERSION="3.8"
 BUILD="1"
 MIN_MACOS="14.0"
 

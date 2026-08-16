@@ -4,6 +4,7 @@ import Foundation
 /// surface can be audited/adjusted in one place.
 enum Endpoint {
     static let system            = "/system"
+    static let systemProduct     = "/system/product"
     static let codecFormat       = "/system/codecFormat"
     static let videoFormat       = "/system/videoFormat"
     static let supportedCodecs   = "/system/supportedCodecFormats"
@@ -16,14 +17,13 @@ enum Endpoint {
     static let whiteBalanceTint  = "/video/whiteBalanceTint"
     static let autoWhiteBalance  = "/video/whiteBalance/doAuto"
     static let shutter           = "/video/shutter"
+    static let shutterMeasurement = "/video/shutter/measurement"
     static let supportedShutters = "/video/supportedShutters"
     static let ndFilter          = "/video/ndFilter"
     static let autoExposure      = "/video/autoExposure"
 
     static let dynamicRange          = "/system/dynamicRange"
     static let supportedDynamicRanges = "/system/supportedDynamicRanges"
-
-    static let proxyRecording    = "/transports/0/proxyRecording"
 
     // Monitoring / tools
     static let monitoringDisplay = "/monitoring/display"
@@ -34,16 +34,19 @@ enum Endpoint {
     static func falseColor(_ display: String) -> String { "/monitoring/\(display)/falseColor" }
     static func focusAssistDisplay(_ display: String) -> String { "/monitoring/\(display)/focusAssist" }
     static func frameGuideDisplay(_ display: String) -> String { "/monitoring/\(display)/frameGuide" }
+    static func frameGridsDisplay(_ display: String) -> String { "/monitoring/\(display)/frameGrids" }
+    static func safeAreaDisplay(_ display: String) -> String { "/monitoring/\(display)/safeArea" }
+    static func displayLUT(_ display: String) -> String { "/monitoring/\(display)/displayLUT" }
+    static let frameGridsGlobal  = "/monitoring/frameGrids"
+    static let safeAreaPercent   = "/monitoring/safeAreaPercent"
 
     static let iris              = "/lens/iris"
     static let focus             = "/lens/focus"
     static let doAutoFocus       = "/lens/focus/doAutoFocus"
+    static let ois               = "/lens/opticalImageStabilization"
     static let zoom              = "/lens/zoom"
 
     static let record            = "/transports/0/record"
-    static let stop              = "/transports/0/stop"
-    static let play              = "/transports/0/play"
-    static let transport         = "/transports/0"
     static let timecode          = "/transports/0/timecode"
     static let doStillCapture    = "/transports/0/doStillCapture"
 

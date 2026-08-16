@@ -4,7 +4,7 @@ import AppKit
 /// App-wide constants. Keep `version` in sync with `Packaging/bundle.sh`
 /// (CFBundleShortVersionString) so the top-bar label matches the bundle.
 enum AppInfo {
-    static let version = "3.7"
+    static let version = "3.8"
     static let author = "w.dauel"
 }
 

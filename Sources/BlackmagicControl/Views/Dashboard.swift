@@ -56,11 +56,22 @@ struct DashboardView: View {
                     toggleTile("False Color", cam.falseColor) { cam.setFalseColor(!cam.falseColor) }
                     toggleTile("Focus Assist", cam.focusAssist) { cam.setFocusAssist(!cam.focusAssist) }
                     toggleTile("Zebra", cam.zebra) { cam.setZebra(!cam.zebra) }
-                    toggleTile("Frame Guide", cam.frameGuide) { cam.setFrameGuide(!cam.frameGuide) }
-                    PickerTile(caption: "Guide Ratio", value: cam.frameGuideRatio, valueSize: 17,
-                               options: cam.frameGuidePresets, current: cam.frameGuideRatio,
-                               onSelect: { cam.setFrameGuideRatio($0) })
-                    toggleTile("Proxy Rec", cam.proxyRecording) { cam.setProxyRecording(!cam.proxyRecording) }
+                    ToggleMenuTile(caption: "Frame Lines", value: cam.frameGuideRatio, valueSize: 16,
+                                   isOn: cam.frameGuide, onToggle: { cam.setFrameGuide(!cam.frameGuide) }) { dismiss in
+                        OptionList(options: cam.frameGuidePresets, current: cam.frameGuideRatio,
+                                   onSelect: { cam.setFrameGuideRatio($0) }, dismiss: dismiss)
+                    }
+                    ToggleMenuTile(caption: "Frame Grids", value: cam.gridType, valueSize: 15,
+                                   isOn: cam.frameGrids, onToggle: { cam.setFrameGrids(!cam.frameGrids) }) { dismiss in
+                        OptionList(options: ["Thirds", "Crosshair", "Horizon"], current: cam.gridType,
+                                   onSelect: { cam.setGridType($0) }, dismiss: dismiss)
+                    }
+                    ToggleMenuTile(caption: "Safe Area", value: "\(cam.safeAreaPercent)", unit: "%", valueSize: 18,
+                                   isOn: cam.safeArea, onToggle: { cam.setSafeArea(!cam.safeArea) }) { _ in
+                        safeAreaSlider
+                    }
+                    toggleTile("Display LUT", cam.displayLUT) { cam.setDisplayLUT(!cam.displayLUT) }
+                    toggleTile("Stabilizer", cam.ois) { cam.setOIS(!cam.ois) }
                 }
 
                 // Slate — scene / take / reel
@@ -101,7 +112,30 @@ struct DashboardView: View {
         .panelStyle()
     }
 
-    /// Level tile — roll / pitch readout from the motion sensor.
+    /// Safe-area percentage slider (80–100%) shown in the Safe Area tile's
+    /// popover. Commits on release so dragging doesn't flood the camera.
+    private var safeAreaSlider: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("SAFE AREA").controlLabelStyle()
+                Spacer()
+                Text("\(cam.safeAreaPercent)%").font(.readout(20)).foregroundStyle(Theme.textPrimary)
+            }
+            Slider(value: Binding(get: { Double(cam.safeAreaPercent) },
+                                  set: { cam.safeAreaPercent = Int($0.rounded()) }),
+                   in: 80...100, step: 1,
+                   onEditingChanged: { editing in
+                       if !editing { cam.setSafeAreaPercent(cam.safeAreaPercent) }
+                   })
+                .tint(Theme.accent)
+            HStack {
+                Text("80%"); Spacer(); Text("100%")
+            }
+            .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+        }
+        .padding(16).frame(width: 240)
+    }
+
     private var levelTile: some View {
         Tile(caption: "Level") {
             VStack(alignment: .leading, spacing: 4) {
@@ -117,59 +151,88 @@ struct DashboardView: View {
 
     private var shutterTile: some View {
         LockTile(caption: "Shutter",
-                 value: String(format: "%.1f°", cam.shutterAngle),
-                 subValue: shutterSpeedText,
+                 value: shutterPrimary,
+                 subValue: shutterSecondary,
                  locked: Binding(get: { cam.shutterLocked }, set: { cam.shutterLocked = $0 })) {
             shutterEditor
         }
     }
 
-    /// Nominal 1/x exposure time from shutter angle and current frame rate.
-    private var shutterSpeedText: String? {
-        guard let fps = Double(cam.frameRate), fps > 0, cam.shutterAngle > 0 else { return nil }
-        let denom = fps * 360 / cam.shutterAngle
-        return "1/\(Int(denom.rounded()))"
+    private var isSpeedMode: Bool { cam.shutterMeasurement == "ShutterSpeed" }
+
+    /// Speed in 1/x from the camera value, or derived from angle + frame rate.
+    private var currentShutterSpeed: Int {
+        if let s = cam.shutterSpeed, s > 0 { return s }
+        guard let fps = Double(cam.frameRate), fps > 0, cam.shutterAngle > 0 else { return 50 }
+        return Int((fps * 360 / cam.shutterAngle).rounded())
+    }
+    private var shutterPrimary: String {
+        isSpeedMode ? "1/\(currentShutterSpeed)" : String(format: "%.1f°", cam.shutterAngle)
+    }
+    private var shutterSecondary: String? {
+        isSpeedMode ? shutterLabel(cam.shutterAngle) : "1/\(currentShutterSpeed)"
     }
 
     private var shutterEditor: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("SHUTTER ANGLE").controlLabelStyle()
+                Text(isSpeedMode ? "SHUTTER SPEED" : "SHUTTER ANGLE").controlLabelStyle()
                 Spacer()
-                Text(shutterLabel(cam.shutterAngle))
+                Text(isSpeedMode ? "1/\(currentShutterSpeed)" : shutterLabel(cam.shutterAngle))
                     .font(.readout(22)).foregroundStyle(Theme.textPrimary)
             }
 
-            VStack(spacing: 5) {
-                // Tick marks, one per stop (equally spaced to match the stepped slider)
-                GeometryReader { geo in
-                    let inset: CGFloat = 11
-                    let usable = max(geo.size.width - inset * 2, 1)
-                    ForEach(shutterStops.indices, id: \.self) { i in
-                        let frac = CGFloat(i) / CGFloat(shutterStops.count - 1)
-                        let active = i == nearestShutterIndex(cam.shutterAngle)
-                        Rectangle()
-                            .fill(active ? Theme.accent : Theme.textTertiary)
-                            .frame(width: active ? 2 : 1, height: active ? 9 : 6)
-                            .offset(x: inset + frac * usable - (active ? 1 : 0.5))
-                    }
+            SegmentedControl(options: [(false, "Angle"), (true, "Speed")],
+                             selection: Binding(get: { isSpeedMode },
+                                                set: { cam.setShutterMeasurement($0 ? "ShutterSpeed" : "ShutterAngle") }))
+
+            if isSpeedMode {
+                steppedSlider(count: shutterSpeedStops.count,
+                              activeIndex: nearestSpeedIndex(currentShutterSpeed)) {
+                    cam.setShutterSpeed(shutterSpeedStops[$0])
                 }
-                .frame(height: 9)
-
-                Slider(value: Binding(
-                            get: { Double(nearestShutterIndex(cam.shutterAngle)) },
-                            set: { cam.setShutterAngle(shutterStops[Int($0.rounded())]) }),
-                       in: 0...Double(shutterStops.count - 1), step: 1)
-                    .tint(Theme.accent)
-            }
-
-            HStack {
-                Text("\(shutterLabel(shutterStops.first!))").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
-                Spacer()
-                Text("\(shutterLabel(shutterStops.last!))").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                HStack {
+                    Text("1/\(shutterSpeedStops.first!)").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                    Text("1/\(shutterSpeedStops.last!)").font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                }
+            } else {
+                steppedSlider(count: shutterStops.count,
+                              activeIndex: nearestShutterIndex(cam.shutterAngle)) {
+                    cam.setShutterAngle(shutterStops[$0])
+                }
+                HStack {
+                    Text(shutterLabel(shutterStops.first!)).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                    Text(shutterLabel(shutterStops.last!)).font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+                }
             }
         }
         .task { await cam.refreshSupportedExposure() }
+    }
+
+    /// A stepped slider with a tick per stop (shared by angle & speed modes).
+    private func steppedSlider(count: Int, activeIndex: Int, onSet: @escaping (Int) -> Void) -> some View {
+        VStack(spacing: 5) {
+            GeometryReader { geo in
+                let inset: CGFloat = 11
+                let usable = max(geo.size.width - inset * 2, 1)
+                ForEach(0..<count, id: \.self) { i in
+                    let frac = count > 1 ? CGFloat(i) / CGFloat(count - 1) : 0
+                    let active = i == activeIndex
+                    Rectangle()
+                        .fill(active ? Theme.accent : Theme.textTertiary)
+                        .frame(width: active ? 2 : 1, height: active ? 9 : 6)
+                        .offset(x: inset + frac * usable - (active ? 1 : 0.5))
+                }
+            }
+            .frame(height: 9)
+
+            Slider(value: Binding(get: { Double(activeIndex) },
+                                  set: { onSet(Int($0.rounded())) }),
+                   in: 0...Double(max(count - 1, 1)), step: 1)
+                .tint(Theme.accent)
+        }
     }
 
     /// Shutter-angle stops the slider snaps to — from the camera when available,
@@ -179,10 +242,23 @@ struct DashboardView: View {
             ? [1.35, 2.7, 5.4, 10.8, 21.6, 43.2, 45, 54, 86.4, 90, 108, 112.5, 180, 216, 225, 327.27, 360]
             : cam.supportedShutterAngles
     }
+    private var shutterSpeedStops: [Int] {
+        cam.supportedShutterSpeeds.isEmpty
+            ? [24, 30, 48, 50, 60, 96, 100, 120, 125, 200, 250, 500, 1000, 2000, 4000, 8000]
+            : cam.supportedShutterSpeeds
+    }
     private func nearestShutterIndex(_ angle: Double) -> Int {
         var best = 0, bestDiff = Double.greatestFiniteMagnitude
         for (i, v) in shutterStops.enumerated() {
             let d = abs(v - angle)
+            if d < bestDiff { bestDiff = d; best = i }
+        }
+        return best
+    }
+    private func nearestSpeedIndex(_ v: Int) -> Int {
+        var best = 0, bestDiff = Int.max
+        for (i, s) in shutterSpeedStops.enumerated() {
+            let d = abs(s - v)
             if d < bestDiff { bestDiff = d; best = i }
         }
         return best
@@ -339,7 +415,7 @@ struct DashboardView: View {
 
     private var focusTile: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Text("Focus").controlLabelStyle()
                 Spacer()
                 afButton
@@ -358,7 +434,7 @@ struct DashboardView: View {
         .background(Theme.panel, in: RoundedRectangle(cornerRadius: Theme.tileCorner, style: .continuous))
     }
 
-    /// AF trigger — grey when idle, green only while an autofocus pass is running.
+    /// One-shot AF trigger — grey when idle, green only while a pass is running.
     private var afButton: some View {
         Button { cam.autoFocus() } label: {
             Text("AF")

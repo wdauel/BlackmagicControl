@@ -156,7 +156,7 @@ struct ShutterMeasurement: Codable { var measurement: String }   // "ShutterAngl
 struct DynamicRangeValue: Codable { var dynamicRange: String }
 struct SupportedDynamicRanges: Codable { var supportedDynamicRanges: [String] }
 
-struct EnabledValue: Codable { var enabled: Bool }   // falseColor, frameGuide, displayLUT, proxyRecording
+struct EnabledValue: Codable { var enabled: Bool }   // falseColor, frameGuide, frameGrids, safeArea, displayLUT, OIS
 
 struct MonitoringDisplays: Codable { var displays: [String] }
 struct FocusAssistValue: Codable { var mode: String; var color: String?; var intensity: Int? }
@@ -164,6 +164,19 @@ struct ZebraBand: Codable { var type: String?; var level: Int?; var enabled: Boo
 struct ZebraValue: Codable { var skinTone: ZebraBand?; var highlight: ZebraBand? }
 struct FrameGuideRatioValue: Codable { var ratio: String }
 struct FrameGuidePresets: Codable { var presets: [String] }
+
+/// `/monitoring/frameGrids` (global) — which grid overlays are on. At most 2;
+/// if 2, one must be "Thirds". Verified values seen: "Crosshair".
+struct FrameGridsValue: Codable { var frameGrids: [String] }
+/// `/monitoring/safeAreaPercent` (global). Verified: `{ "percent": 93 }`.
+struct SafeAreaPercentValue: Codable { var percent: Int }
+
+/// `/system/product` — verified `{softwareVersion, productName, deviceName}`.
+struct SystemProduct: Codable {
+    var softwareVersion: String?
+    var productName: String?   // "iPhone 17 Pro"
+    var deviceName: String?    // "A"
+}
 
 // MARK: - Slate (`/slates/...`)
 
