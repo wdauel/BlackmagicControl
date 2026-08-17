@@ -49,11 +49,28 @@ final class CameraController: ObservableObject, Identifiable {
     @Published var irisNormalised: Double = 0.5
     @Published var focusNormalised: Double = 1.0
     @Published var afActive = false            // true briefly while an AF pass runs
+    @Published var afContinuous = false        // continuous autofocus running
+    @Published var afContinuousSupported = false
     @Published var ois = false                 // optical image stabilization
-    @Published var focalLength: Int = 24        // selected lens, in mm
+    @Published var focalLength: Int = 24        // effective focal length reported by /lens/zoom
+
+    // Physical lens module selection
+    @Published var availableLenses: [LensModule] = LensModule.iPhoneProRear
+    @Published var activeLensId: String = ""    // "Lens24mm"; empty until first read
+    /// Focus is a single shared device value, NOT remembered per physical lens
+    /// (verified in docs). We stash each lens's last focus here and re-apply it
+    /// after a switch so lenses behave as if they kept their own focus.
+    private var lensFocusMemory: [String: Double] = [:]
+
+    /// The active module, resolved from the live id (falls back to focal length).
+    var activeLens: LensModule? {
+        availableLenses.first { $0.id == activeLensId }
+            ?? availableLenses.first { $0.focalLength == focalLength }
+    }
 
     // Transport
     @Published var isRecording = false
+    @Published var proxyRecording = false      // secondary proxy recording
     @Published var timecode: String = "00:00:00:00"
 
     // Presets
@@ -87,7 +104,14 @@ final class CameraController: ObservableObject, Identifiable {
     @Published var safeArea = false
     @Published var safeAreaPercent = 90
     @Published var displayLUT = false
+    @Published var cleanFeed = false                   // HDMI clean feed
+    @Published var brightness = 100                    // active display, 0–100
+    @Published var brightnessAvailable = false
     private var monitorDisplay = "Device"
+    private var monitorDisplays: [String] = []
+    /// The HDMI display name, if one is connected (clean feed is HDMI-only).
+    var hdmiDisplay: String? { monitorDisplays.first { $0.caseInsensitiveCompare("HDMI") == .orderedSame } }
+    var hasHDMI: Bool { hdmiDisplay != nil }
     private var zebraRaw = ZebraValue(skinTone: ZebraBand(type: "None", level: nil, enabled: false),
                                       highlight: ZebraBand(type: nil, level: 85, enabled: false))
 
@@ -116,9 +140,33 @@ final class CameraController: ObservableObject, Identifiable {
 
     // Media / storage
     @Published var storageVolume: String = "—"
-    @Published var remainingRecordTime: Int = 0      // minutes
+    @Published var remainingRecordTime: Int = 0      // seconds
     @Published var remainingSpace: Int64 = 0
     @Published var clipCount: Int = 0
+
+    /// Codec-aware remaining record time, formatted (e.g. "2h 29m" / "48m").
+    var remainingRecordTimeText: String {
+        let s = remainingRecordTime
+        guard s > 0 else { return "—" }
+        let h = s / 3600, m = (s % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+    }
+
+    // Power / battery
+    @Published var batteryPercent: Int? = nil
+    @Published var powerSource: String = "—"
+    @Published var batteryCharging = false
+
+    // Pre-record (transport cache buffer)
+    @Published var prerecordAuto = false
+    @Published var prerecordMaxDuration = 0          // seconds
+    @Published var prerecordSupportedDurations: [Int] = []
+    @Published var prerecording = false
+
+    /// Buffer-length choices for the pre-record picker (device list, else sensible stops).
+    var prerecordDurationOptions: [Int] {
+        prerecordSupportedDurations.isEmpty ? [5, 10, 15, 20, 30, 60] : prerecordSupportedDurations
+    }
 
     // Camera tag (editable letter + color shown in the top bar)
     @Published var letter: String
@@ -154,6 +202,7 @@ final class CameraController: ObservableObject, Identifiable {
                                        delegate: InsecureTrustDelegate.shared, delegateQueue: nil)
     private var wsTask: URLSessionWebSocketTask?
     @Published var liveConnected = false
+    @Published var pingMs: Int?                // last request round-trip latency, ms
 
     var isConnected: Bool { connection == .connected }
 
@@ -183,6 +232,7 @@ final class CameraController: ObservableObject, Identifiable {
         pollTask?.cancel(); pollTask = nil
         wsTask?.cancel(with: .goingAway, reason: nil); wsTask = nil
         liveConnected = false
+        pingMs = nil
         client = nil
         connection = .disconnected
     }
@@ -213,8 +263,9 @@ final class CameraController: ObservableObject, Identifiable {
         }
         if let f = try? await c.get(Endpoint.focus, as: FocusValue.self) { focusNormalised = f.normalised }
         if let o = try? await c.get(Endpoint.ois, as: EnabledValue.self) { ois = o.enabled }
-        if let z = try? await c.get(Endpoint.zoom, as: ZoomValue.self), let mm = z.focalLength { focalLength = mm }
+        await refreshLens()
         if let r = try? await c.get(Endpoint.record, as: RecordState.self) { isRecording = r.recording }
+        if let px = try? await c.get(Endpoint.proxyRecording, as: EnabledValue.self) { proxyRecording = px.enabled }
         if let ae = try? await c.get(Endpoint.autoExposure, as: AutoExposureValue.self), let m = ae.mode { aeMode = m }
 
         // Format + supported lists
@@ -239,8 +290,9 @@ final class CameraController: ObservableObject, Identifiable {
         }
 
         // Recording tools + monitoring
-        if let disp = try? await c.get(Endpoint.monitoringDisplay, as: MonitoringDisplays.self), let first = disp.displays.first {
-            monitorDisplay = first
+        if let disp = try? await c.get(Endpoint.monitoringDisplay, as: MonitoringDisplays.self) {
+            monitorDisplays = disp.displays
+            if let first = disp.displays.first { monitorDisplay = first }
         }
         if let fc = try? await c.get(Endpoint.falseColor(monitorDisplay), as: EnabledValue.self) { falseColor = fc.enabled }
         if let fa = try? await c.get(Endpoint.focusAssistDisplay(monitorDisplay), as: EnabledValue.self) { focusAssist = fa.enabled }
@@ -253,6 +305,12 @@ final class CameraController: ObservableObject, Identifiable {
         if let sa = try? await c.get(Endpoint.safeAreaDisplay(monitorDisplay), as: EnabledValue.self) { safeArea = sa.enabled }
         if let sp = try? await c.get(Endpoint.safeAreaPercent, as: SafeAreaPercentValue.self) { safeAreaPercent = sp.percent }
         if let lut = try? await c.get(Endpoint.displayLUT(monitorDisplay), as: EnabledValue.self) { displayLUT = lut.enabled }
+        if let b = try? await c.get(Endpoint.brightness(monitorDisplay), as: BrightnessValue.self) {
+            brightness = b.brightness; brightnessAvailable = true
+        }
+        if let hdmi = hdmiDisplay, let cf = try? await c.get(Endpoint.cleanFeed(hdmi), as: EnabledValue.self) {
+            cleanFeed = cf.enabled
+        }
 
         // Color correction
         if let v = try? await c.get(Endpoint.ccLift, as: ColorRGBL.self) { ccLift = v }
@@ -287,6 +345,30 @@ final class CameraController: ObservableObject, Identifiable {
         await loadPresets()
         await refreshSlate()
         await refreshHorizon()
+        await refreshPower()
+        await refreshPrerecord()
+    }
+
+    /// `/camera/power` — battery percentage, source, charging state.
+    func refreshPower() async {
+        guard let c = client else { return }
+        if let p = try? await c.get(Endpoint.power, as: PowerStatus.self) {
+            powerSource = p.source ?? "—"
+            let batt = p.batteries?.first
+            batteryPercent = batt?.chargeRemainingPercent
+            batteryCharging = batt?.statusFlags?.contains("Battery Is Charging") ?? false
+        }
+    }
+
+    /// Pre-record buffer: auto-enable, max duration, and supported durations.
+    func refreshPrerecord() async {
+        guard let c = client else { return }
+        if let a = try? await c.get(Endpoint.prerecordAuto, as: PrerecordAuto.self) { prerecordAuto = a.autoEnabled }
+        if let m = try? await c.get(Endpoint.prerecordMaxDuration, as: PrerecordMaxDuration.self) { prerecordMaxDuration = m.maxDuration }
+        if let s = try? await c.get(Endpoint.prerecordSupportedDurations, as: PrerecordSupportedDurations.self) {
+            prerecordSupportedDurations = s.values
+        }
+        if let st = try? await c.get(Endpoint.prerecord, as: PrerecordStatus.self) { prerecording = st.value }
     }
 
     /// `/camera/motionSensor/euler` (radians) → roll/pitch degrees. The iPhone's
@@ -343,6 +425,35 @@ final class CameraController: ObservableObject, Identifiable {
         }
     }
 
+    /// Read the active physical lens + effective focal length. Best-effort reads
+    /// the enumerated module list too, so non-iPhone bodies would populate their
+    /// own set; the static `iPhoneProRear` catalog remains the reliable fallback.
+    func refreshLens() async {
+        guard let c = client else { return }
+        if let list = try? await c.get(Endpoint.lensCameras, as: LensCameras.self),
+           let cams = list.cameras, !cams.isEmpty {
+            let live = cams.compactMap { dto -> LensModule? in
+                guard let id = dto.id else { return nil }
+                // Keep the catalog's display metadata when the id is a known one.
+                return LensModule.iPhoneProRear.first { $0.id == id }
+                    ?? LensModule(id: id, zoomFactor: "", focalLength: dto.index ?? 0, name: id)
+            }
+            if !live.isEmpty { availableLenses = live }
+        }
+        if let a = try? await c.get(Endpoint.lensCamerasActive, as: ActiveLens.self), let id = a.id {
+            activeLensId = id
+        }
+        if let z = try? await c.get(Endpoint.zoom, as: ZoomValue.self), let mm = z.focalLength {
+            focalLength = mm
+        }
+        if let d = try? await c.get(Endpoint.autoFocusDescription, as: AutoFocusDescription.self) {
+            afContinuousSupported = (d.supportedModes ?? []).contains("Continuous")
+        }
+        if let af = try? await c.get(Endpoint.autoFocus, as: AutoFocusValue.self) {
+            afContinuous = (af.enabled ?? false) && af.mode == "Continuous"
+        }
+    }
+
     /// Pull the camera's supported ISO list and shutter-angle stops. Called on
     /// connect and whenever an exposure editor opens (the ISO list is lens-aware).
     func refreshSupportedExposure() async {
@@ -365,8 +476,10 @@ final class CameraController: ObservableObject, Identifiable {
             var tick = 0
             while !Task.isCancelled {
                 guard let self, let c = self.client else { return }
+                let start = Date()
                 if let rec = try? await c.get(Endpoint.record, as: RecordState.self) {
                     self.isRecording = rec.recording
+                    self.pingMs = Int(Date().timeIntervalSince(start) * 1000)
                 }
                 if let z = try? await c.get(Endpoint.zoom, as: ZoomValue.self), let mm = z.focalLength {
                     self.focalLength = mm
@@ -395,10 +508,14 @@ final class CameraController: ObservableObject, Identifiable {
             shutterAngle = ShutterAngle.degrees(from: raw)
         }
         if let f = try? await c.get(Endpoint.focus, as: FocusValue.self) { focusNormalised = f.normalised }
+        if let af = try? await c.get(Endpoint.autoFocus, as: AutoFocusValue.self) {
+            afContinuous = (af.enabled ?? false) && af.mode == "Continuous"
+        }
         if let i = try? await c.get(Endpoint.iris, as: IrisValue.self) {
             if let f = i.apertureStop { irisFStop = f } else if let n = i.apertureNumber { irisFStop = n / 100 }
         }
         if let ae = try? await c.get(Endpoint.autoExposure, as: AutoExposureValue.self), let m = ae.mode { aeMode = m }
+        await refreshPower()
         await refreshSlate()
     }
 
@@ -419,8 +536,8 @@ final class CameraController: ObservableObject, Identifiable {
     private func subscribeEvents() {
         let props = [
             Endpoint.iso, Endpoint.whiteBalance, Endpoint.whiteBalanceTint, Endpoint.shutter,
-            Endpoint.autoExposure, Endpoint.iris, Endpoint.focus, Endpoint.zoom, Endpoint.record,
-            Endpoint.codecFormat, Endpoint.videoFormat, Endpoint.mediaWorkingset
+            Endpoint.autoExposure, Endpoint.iris, Endpoint.focus, Endpoint.zoom, Endpoint.lensCamerasActive,
+            Endpoint.record, Endpoint.proxyRecording, Endpoint.codecFormat, Endpoint.videoFormat, Endpoint.mediaWorkingset
         ]
         let msg: [String: Any] = ["type": "request",
                                   "data": ["action": "subscribe", "properties": props]]
@@ -466,9 +583,11 @@ final class CameraController: ObservableObject, Identifiable {
         case Endpoint.iris:             if let v = dec(IrisValue.self) { if let f = v.apertureStop { irisFStop = f } else if let n = v.apertureNumber { irisFStop = n / 100 } }
         case Endpoint.focus:            if let v = dec(FocusValue.self) { focusNormalised = v.normalised }
         case Endpoint.zoom:             if let v = dec(ZoomValue.self), let mm = v.focalLength { focalLength = mm }
+        case Endpoint.lensCamerasActive: if let v = dec(ActiveLens.self), let id = v.id { activeLensId = id }
         case Endpoint.record:           if let v = dec(RecordState.self) { isRecording = v.recording }
-        case Endpoint.codecFormat:      if let v = dec(CodecFormatValue.self) { codec = v.codec }
-        case Endpoint.videoFormat:      if let v = dec(SystemInfo.VideoFormat.self), let n = v.name { videoFormatName = n }
+        case Endpoint.proxyRecording:   if let v = dec(EnabledValue.self) { proxyRecording = v.enabled }
+        case Endpoint.codecFormat:      if let v = dec(CodecFormatValue.self) { codec = v.codec; Task { await refreshLens() } }
+        case Endpoint.videoFormat:      if let v = dec(SystemInfo.VideoFormat.self), let n = v.name { videoFormatName = n; Task { await refreshLens() } }
         default: break
         }
     }
@@ -543,13 +662,55 @@ final class CameraController: ObservableObject, Identifiable {
         push { try await $0.put(Endpoint.ois, EnabledValue(enabled: on)) }
     }
 
+    /// Switch the active physical camera module. Uses `id` (index alone → 500).
+    /// Focus is a single shared device value, so we stash the outgoing lens's
+    /// focus and re-apply the incoming lens's remembered focus after the switch.
+    func setActiveLens(_ lens: LensModule) {
+        guard lens.id != activeLensId else { return }
+        if !activeLensId.isEmpty { lensFocusMemory[activeLensId] = focusNormalised }
+        activeLensId = lens.id                 // optimistic
+        focalLength = lens.focalLength
+        push {
+            try await $0.put(Endpoint.lensCamerasActive, ActiveLens(id: lens.id))
+            try? await Task.sleep(for: .milliseconds(300))
+            await self.refreshLens()
+            if let f = self.lensFocusMemory[lens.id] {
+                _ = try? await $0.put(Endpoint.focus, FocusValue(normalised: f))
+                self.focusNormalised = f
+            }
+        }
+    }
+
+    /// Start/stop recording via the non-deprecated transport verbs: `POST
+    /// /transports/0/record` (empty body → device default clip name) and
+    /// `POST /transports/0/stop`. The `PUT` forms are marked deprecated.
     func toggleRecord() {
         let target = !isRecording
         isRecording = target
-        push { try await $0.put(Endpoint.record, RecordState(recording: target)) }
+        push {
+            if target { _ = try await $0.post(Endpoint.record) }
+            else       { _ = try await $0.post(Endpoint.stop) }
+        }
+    }
+
+    /// Auto pre-record: when on, the camera continuously buffers up to the max
+    /// duration so a recording captures the moments before you hit record.
+    func setPrerecordAuto(_ on: Bool) {
+        prerecordAuto = on
+        push { try await $0.put(Endpoint.prerecordAuto, PrerecordAuto(autoEnabled: on)) }
+    }
+    func setPrerecordMaxDuration(_ seconds: Int) {
+        prerecordMaxDuration = seconds
+        push { try await $0.put(Endpoint.prerecordMaxDuration, PrerecordMaxDuration(maxDuration: seconds)) }
     }
 
     func stillCapture() { push { try await $0.post(Endpoint.doStillCapture) } }
+
+    /// Proxy (secondary) recording — records a lightweight proxy alongside the master.
+    func setProxyRecording(_ on: Bool) {
+        proxyRecording = on
+        push { try await $0.put(Endpoint.proxyRecording, EnabledValue(enabled: on)) }
+    }
 
     func autoWhiteBalance() { push { try await $0.put(Endpoint.autoWhiteBalance, [String: String]()); await self.refreshWB() } }
     /// One-shot autofocus. `doAutoFocus` has no completion event, so we light the
@@ -558,6 +719,15 @@ final class CameraController: ObservableObject, Identifiable {
         afActive = true
         push { try await $0.put(Endpoint.doAutoFocus, [String: String]()) }
         Task { try? await Task.sleep(for: .seconds(1.2)); afActive = false }
+    }
+
+    /// Toggle continuous autofocus. On → `{enabled:true, mode:"Continuous"}`;
+    /// off returns to on-demand one-shot (`mode:"OneShot"`), the mode switch
+    /// verified live in the docs. Dragging the manual focus slider takes the
+    /// device back to manual, which the poll reflects here.
+    func setContinuousAF(_ on: Bool) {
+        afContinuous = on
+        push { try await $0.put(Endpoint.autoFocus, AutoFocusValue(enabled: true, mode: on ? "Continuous" : "OneShot", state: nil, supported: nil)) }
     }
 
     // MARK: Dynamic range / recording tools / monitoring
@@ -608,20 +778,60 @@ final class CameraController: ObservableObject, Identifiable {
         displayLUT = on
         push { try await $0.put(Endpoint.displayLUT(self.monitorDisplay), EnabledValue(enabled: on)) }
     }
+    /// Screen brightness (0–100) of the active monitoring display (the phone screen).
+    func setBrightness(_ v: Int) {
+        brightness = v
+        let display = monitorDisplay
+        push { try await $0.put(Endpoint.brightness(display), BrightnessValue(brightness: v)) }
+    }
+    /// HDMI clean feed (no overlays on the external output). No-op if no HDMI display.
+    func setCleanFeed(_ on: Bool) {
+        cleanFeed = on
+        guard let hdmi = hdmiDisplay else { return }
+        push { try await $0.put(Endpoint.cleanFeed(hdmi), EnabledValue(enabled: on)) }
+    }
 
     // MARK: Format
 
     func setCodec(_ codec: String) {
         codecFull = codec
-        push { try await $0.put(Endpoint.codecFormat, CodecFormatValue(codec: codec, container: "mov")) }
+        push {
+            try await $0.put(Endpoint.codecFormat, CodecFormatValue(codec: codec, container: "mov"))
+            try? await Task.sleep(for: .milliseconds(400))
+            // Open Gate only records correctly in ProRes RAW. If we've moved to a
+            // non-RAW codec while still in Open Gate, drop to UHD to stay valid.
+            if !codec.localizedCaseInsensitiveContains("RAW") {
+                if let vf = try? await $0.get(Endpoint.videoFormat, as: SystemInfo.VideoFormat.self), let n = vf.name {
+                    self.videoFormatName = n
+                }
+                if self.currentResolution == Self.openGateResolution {
+                    self.setResolution("3840x2160")
+                }
+            }
+            // Available lens modules (and shutter/ISO stops) are codec/format
+            // dependent — e.g. the 2× 48mm and 8× 200mm Fusion lenses appear in
+            // ProRes 422 UHD — so re-enumerate after the device reconfigures.
+            try? await Task.sleep(for: .milliseconds(500))
+            await self.refreshLens()
+            await self.refreshSupportedExposure()
+        }
     }
     func setVideoFormat(_ name: String) {
         videoFormatName = name
-        push { try await $0.put(Endpoint.videoFormat, VideoFormatValue(name: name)) }
+        push {
+            try await $0.put(Endpoint.videoFormat, VideoFormatValue(name: name))
+            try? await Task.sleep(for: .milliseconds(500))
+            await self.refreshLens()
+            await self.refreshSupportedExposure()
+        }
     }
 
     /// The video format name packs resolution + frame rate ("3840x2160p29.97").
     /// These split it so Resolution and FPS can be their own tiles.
+    static let openGateResolution = "4032x3024"
+    /// True when the active codec is any ProRes RAW flavor (the only codecs that
+    /// support Open Gate capture).
+    var isProResRAW: Bool { codecFull.localizedCaseInsensitiveContains("RAW") }
     var currentResolution: String { videoFormatName.components(separatedBy: "p").first ?? "" }
     var currentFPS: String {
         let parts = videoFormatName.components(separatedBy: "p")
@@ -633,6 +843,9 @@ final class CameraController: ObservableObject, Identifiable {
             let r = f.components(separatedBy: "p").first ?? ""
             if !r.isEmpty, !seen.contains(r) { seen.insert(r); out.append(r) }
         }
+        // Open Gate (4032×3024) only records correctly in ProRes RAW; for ProRes
+        // 422 (HQ and below), HEVC, and H.264 the ceiling is UHD.
+        if !isProResRAW { out.removeAll { $0 == Self.openGateResolution } }
         return out
     }
     func availableFPS(for resolution: String) -> [String] {
@@ -748,12 +961,14 @@ final class CameraController: ObservableObject, Identifiable {
         push { try await $0.put(Endpoint.activePreset, ActivePreset(preset: name)); await self.refreshAll() }
     }
 
-    /// Save the current camera state as a preset (creates or overwrites). The
-    /// camera stores presets with a `.cset` extension.
+    /// Save the current camera state as a preset. Names are bare — every preset
+    /// endpoint (GET/PUT/DELETE on `/presets/{name}`) uses the same bare name;
+    /// appending `.bmcpreset` to the path 404s. Verified device behavior: this
+    /// PUT also switches the active preset to the one just saved, so reflect that.
     func savePreset(_ rawName: String) {
-        var name = rawName.trimmingCharacters(in: .whitespaces)
+        let name = rawName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
-        if !name.lowercased().hasSuffix(".cset") { name += ".cset" }
+        activePreset = name
         let path = Endpoint.preset(name)
         push { try await $0.put(path); await self.loadPresets() }
     }

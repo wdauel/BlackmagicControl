@@ -17,15 +17,6 @@ struct DashboardView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
 
-                // Media / storage
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.gutter), count: 4),
-                          spacing: Theme.gutter) {
-                    infoTile("Media", cam.storageVolume)
-                    infoTile("Record Time", cam.remainingRecordTime > 0 ? "\(cam.remainingRecordTime)" : "—", unit: "min")
-                    infoTile("Clips", "\(cam.clipCount)")
-                    levelTile
-                }
-
                 // Exposure tiles — ISO, Shutter (lock), White Balance (lock), Auto Exposure
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.gutter), count: 4),
                           spacing: Theme.gutter) {
@@ -50,6 +41,14 @@ struct DashboardView: View {
                                onSelect: { cam.setFPS($0) })
                 }
 
+                // Media / storage
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.gutter), count: 3),
+                          spacing: Theme.gutter) {
+                    infoTile("Media", cam.storageVolume)
+                    infoTile("Record Time", cam.remainingRecordTimeText)
+                    infoTile("Clips", "\(cam.clipCount)")
+                }
+
                 // Monitoring + recording tools
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.gutter), count: 6),
                           spacing: Theme.gutter) {
@@ -72,6 +71,13 @@ struct DashboardView: View {
                     }
                     toggleTile("Display LUT", cam.displayLUT) { cam.setDisplayLUT(!cam.displayLUT) }
                     toggleTile("Stabilizer", cam.ois) { cam.setOIS(!cam.ois) }
+                    if cam.brightnessAvailable { BrightnessTile(cam: cam) }
+                    toggleTile("Proxy Rec", cam.proxyRecording) { cam.setProxyRecording(!cam.proxyRecording) }
+                    batteryTile
+                    levelTile
+                    if cam.hasHDMI {
+                        toggleTile("Clean Feed", cam.cleanFeed) { cam.setCleanFeed(!cam.cleanFeed) }
+                    }
                 }
 
                 // Slate — scene / take / reel
@@ -88,27 +94,26 @@ struct DashboardView: View {
     // MARK: Top strip
 
     private var timecodeCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Timecode").controlLabelStyle()
-            TimecodeView(timecode: cam.timecode, running: cam.isRecording)
-            Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                StatusPill(text: cam.isRecording ? "RECORDING" : "STANDBY",
-                           color: cam.isRecording ? Theme.record : Theme.accent,
-                           filled: cam.isRecording)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Timecode").controlLabelStyle()
+                TimecodeView(timecode: cam.timecode, running: cam.isRecording)
             }
+            Spacer(minLength: 0)
+            StatusPill(text: cam.isRecording ? "RECORDING" : "STANDBY",
+                       color: cam.isRecording ? Theme.record : Theme.accent,
+                       filled: cam.isRecording)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
         .panelStyle()
     }
 
     private var recCard: some View {
         VStack {
-            RecButton(isRecording: cam.isRecording) { cam.toggleRecord() }
-                .frame(width: 116, height: 116)
+            RecButton(isRecording: cam.isRecording, diameter: 56) { cam.toggleRecord() }
         }
-        .frame(width: 170, height: 150)
+        .frame(width: 96, height: 78)
         .panelStyle()
     }
 
@@ -145,6 +150,31 @@ struct DashboardView: View {
             .font(.system(size: 14, weight: .semibold, design: .monospaced))
             .foregroundStyle(cam.horizonAvailable ? Theme.textPrimary : Theme.textTertiary)
         }
+    }
+
+    /// Battery %, tinted amber/red as it drops, with a bolt while charging.
+    private var batteryTile: some View {
+        Tile(caption: cam.batteryCharging ? "Battery • Charging" : "Battery") {
+            HStack(alignment: .lastTextBaseline, spacing: 3) {
+                Text(cam.batteryPercent.map { "\($0)" } ?? "—")
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(batteryColor)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                if cam.batteryPercent != nil {
+                    Text("%").font(.unit).foregroundStyle(Theme.textTertiary)
+                }
+                if cam.batteryCharging {
+                    Image(systemName: "bolt.fill").font(.system(size: 10)).foregroundStyle(Theme.amber)
+                }
+            }
+        }
+    }
+
+    private var batteryColor: Color {
+        guard let p = cam.batteryPercent else { return Theme.textTertiary }
+        if p <= 15 { return Theme.record }
+        if p <= 30 { return Theme.amber }
+        return Theme.textPrimary
     }
 
     // MARK: Shutter (compact lockable tile + popover editor)
@@ -285,9 +315,24 @@ struct DashboardView: View {
     }
 
     private var lensTile: some View {
-        Tile(caption: "Lens", locked: true) {
-            ReadoutTile(value: "\(cam.focalLength)", unit: "mm", label: "", size: 22)
-        }
+        let active = cam.activeLens
+        return PickerTile(caption: "Lens",
+                          value: active.map { "\($0.focalLength)" } ?? "\(cam.focalLength)",
+                          unit: "mm",
+                          subValue: active?.zoomFactor,
+                          valueSize: 22,
+                          options: cam.availableLenses.map(lensLabel),
+                          current: active.map(lensLabel),
+                          onSelect: { picked in
+                              if let m = cam.availableLenses.first(where: { lensLabel($0) == picked }) {
+                                  cam.setActiveLens(m)
+                              }
+                          })
+    }
+
+    /// Row label for the lens picker, e.g. "24mm  ·  1×  Main".
+    private func lensLabel(_ l: LensModule) -> String {
+        "\(l.focalLength)mm  ·  \(l.zoomFactor)  \(l.name)"
     }
 
     // MARK: Format tile (friendly resolution names)
@@ -418,6 +463,7 @@ struct DashboardView: View {
             HStack(spacing: 6) {
                 Text("Focus").controlLabelStyle()
                 Spacer()
+                if cam.afContinuousSupported { afContinuousButton }
                 afButton
             }
             HStack(spacing: 10) {
@@ -432,6 +478,20 @@ struct DashboardView: View {
         .padding(.vertical, 10).padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.panel, in: RoundedRectangle(cornerRadius: Theme.tileCorner, style: .continuous))
+    }
+
+    /// Continuous-AF toggle pill — green when the camera is driving focus.
+    private var afContinuousButton: some View {
+        Button { cam.setContinuousAF(!cam.afContinuous) } label: {
+            Text("AUTO")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(cam.afContinuous ? .black : Theme.textTertiary)
+                .padding(.horizontal, 11).padding(.vertical, 4)
+                .background(cam.afContinuous ? Theme.accent : Theme.inset, in: Capsule())
+                .overlay(Capsule().strokeBorder(cam.afContinuous ? .clear : Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.15), value: cam.afContinuous)
     }
 
     /// One-shot AF trigger — grey when idle, green only while a pass is running.
@@ -559,9 +619,12 @@ struct DashboardView: View {
         }
     }
 
-    /// Presets are stored as "Name.cset"; hide the extension in the UI.
+    /// Preset names are bare; strip a known extension defensively for display.
     private func presetLabel(_ name: String) -> String {
-        name.lowercased().hasSuffix(".cset") ? String(name.dropLast(5)) : name
+        for ext in [".bmcpreset", ".cset"] {
+            if name.lowercased().hasSuffix(ext) { return String(name.dropLast(ext.count)) }
+        }
+        return name
     }
 
     // MARK: Small builders
@@ -742,6 +805,41 @@ struct SavePresetButton: View {
         guard !trimmed.isEmpty else { return }
         cam.savePreset(trimmed)
         show = false
+    }
+}
+
+// MARK: - Brightness tile
+
+/// Monitoring-display brightness (phone screen). A value tile that opens a
+/// slider popover; commits on release so a drag doesn't flood the camera.
+struct BrightnessTile: View {
+    @ObservedObject var cam: CameraController
+    @State private var show = false
+
+    var body: some View {
+        Tile(caption: "Brightness", action: { show = true }) {
+            HStack(alignment: .lastTextBaseline, spacing: 2) {
+                Text("\(cam.brightness)").font(.readout(22)).foregroundStyle(Theme.textPrimary)
+                Text("%").font(.readout(15)).foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .popover(isPresented: $show, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("SCREEN BRIGHTNESS").controlLabelStyle()
+                    Spacer()
+                    Text("\(cam.brightness)%").font(.readout(20)).foregroundStyle(Theme.textPrimary)
+                }
+                Slider(value: Binding(get: { Double(cam.brightness) },
+                                      set: { cam.brightness = Int($0.rounded()) }),
+                       in: 0...100, step: 1,
+                       onEditingChanged: { editing in if !editing { cam.setBrightness(cam.brightness) } })
+                    .tint(Theme.accent)
+                HStack { Text("0%"); Spacer(); Text("100%") }
+                    .font(.system(size: 10)).foregroundStyle(Theme.textTertiary)
+            }
+            .padding(16).frame(width: 240).background(Theme.panel)
+        }
     }
 }
 

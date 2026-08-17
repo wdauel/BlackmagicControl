@@ -134,16 +134,26 @@ struct TopBar: View {
 
             connectionPill
 
-            if cam.isConnected && cam.liveConnected {
-                StatusPill(text: "LIVE", color: Theme.blue)
-            }
-
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("\(cam.host):\(String(cam.port))")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.textTertiary)
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 8) {
+                    if cam.isConnected && cam.liveConnected {
+                        HStack(spacing: 5) {
+                            Circle().fill(Theme.blue).frame(width: 7, height: 7)
+                            Text("LIVE").font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                    }
+                    if cam.isConnected, let ping = cam.pingMs {
+                        Text("\(ping) ms")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(pingColor(ping))
+                    }
+                    Text("\(cam.host):\(String(cam.port))")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.textTertiary)
+                }
                 Text("v\(AppInfo.version) · by \(AppInfo.author)")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(Theme.textTertiary.opacity(0.7))
@@ -163,11 +173,18 @@ struct TopBar: View {
 
     @ViewBuilder private var connectionPill: some View {
         switch cam.connection {
-        case .connected:    EmptyView()   // LIVE pill covers the connected state
+        case .connected:    EmptyView()   // LIVE indicator (right) covers this state
         case .connecting:   StatusPill(text: "CONNECTING", color: Theme.amber)
         case .disconnected: StatusPill(text: "OFFLINE", color: Theme.textTertiary)
         case .failed:       StatusPill(text: "NO LINK", color: Theme.record)
         }
+    }
+
+    /// Green ≤40 ms, amber ≤120 ms, red beyond — a quick read on link responsiveness.
+    private func pingColor(_ ms: Int) -> Color {
+        if ms <= 40 { return Theme.accent }
+        if ms <= 120 { return Theme.amber }
+        return Theme.record
     }
 }
 

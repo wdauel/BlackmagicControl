@@ -42,14 +42,101 @@ struct FocusValue: Codable {
     var normalised: Double          // 0 (near) … 1 (∞)
 }
 
+/// `GET/PUT /lens/focus/autoFocus` — AF enable + mode + live state.
+struct AutoFocusValue: Codable {
+    var enabled: Bool?
+    var mode: String?               // "OneShot" | "Continuous"
+    var state: String?              // Idle | Focusing | Focused | Paused | Error
+    var supported: Bool?
+}
+/// `GET /lens/focus/autoFocus/description` — modes this device actually offers.
+struct AutoFocusDescription: Codable {
+    var supportedModes: [String]?   // e.g. ["OneShot","Continuous"]
+    var supported: Bool?
+}
+
 struct ZoomValue: Codable {
     var normalised: Double?         // 0 (wide) … 1 (tele)
     var focalLength: Int?           // mm
 }
 
+// MARK: - Physical lens modules (camera selection)
+
+/// One selectable physical camera module. Switching lens is `PUT /lens/cameras/active`
+/// with `{"id": ...}`; the `id` string is authoritative (sending `index` alone → 500).
+///
+/// The display metadata (zoom factor, marketing focal length, name) is the fixed
+/// iPhone 17 Pro hardware set from Blackmagic's docs — used both as the picker
+/// list and as a fallback when the live `GET /lens/cameras` shape isn't decodable
+/// on a given firmware. Selection/switching always route through the live `id`.
+struct LensModule: Identifiable, Hashable {
+    let id: String            // API id, e.g. "Lens24mm"
+    let zoomFactor: String    // "1×"
+    let focalLength: Int      // marketing mm (13, 24, 48, 100, 200)
+    let name: String          // "Main"
+
+    /// Verified rear modules on the iPhone 17 Pro / Pro Max (docs §"Lens Modules").
+    static let iPhoneProRear: [LensModule] = [
+        .init(id: "Lens13mm",        zoomFactor: "0.5×", focalLength: 13,  name: "Ultra Wide"),
+        .init(id: "Lens24mm",        zoomFactor: "1×",   focalLength: 24,  name: "Main"),
+        .init(id: "LensWASecondary", zoomFactor: "2×",   focalLength: 48,  name: "Main Fusion"),
+        .init(id: "Lens77mm",        zoomFactor: "4×",   focalLength: 100, name: "Telephoto"),
+        .init(id: "Lens200mm",       zoomFactor: "8×",   focalLength: 200, name: "Tele Fusion"),
+    ]
+}
+
+/// `GET/PUT /lens/cameras/active` — the active module id.
+struct ActiveLens: Codable { var id: String? }
+
+/// `GET /lens/cameras` — best-effort decode of the enumerated module list; the
+/// wrapper key varies by firmware, so both spellings are covered.
+struct LensCameraDTO: Codable { var id: String?; var index: Int? }
+struct LensCameras: Codable { var cameras: [LensCameraDTO]? }
+
+/// `GET /lens/zoom/description` — zoom range of the *active* lens (shifts per module).
+struct ZoomDescription: Codable {
+    struct Range: Codable { var min: Double?; var max: Double? }
+    var controllable: Bool?
+    var focalLength: Range?
+}
+
 // MARK: - Transport
 
 struct RecordState: Codable { var recording: Bool }
+
+// MARK: - Pre-record (transport cache buffer)
+
+struct PrerecordAuto: Codable { var autoEnabled: Bool }
+struct PrerecordMaxDuration: Codable { var maxDuration: Int }   // seconds
+/// `GET /transports/0/prerecord/supportedMaxDurations` — key spelling unverified
+/// on this firmware, so cover the likely variants.
+struct PrerecordSupportedDurations: Codable {
+    var supportedMaxDurations: [Int]?
+    var maxDurations: [Int]?
+    var durations: [Int]?
+    var values: [Int] { supportedMaxDurations ?? maxDurations ?? durations ?? [] }
+}
+/// `GET /transports/0/prerecord` — active state (shape unverified; cover likely keys).
+struct PrerecordStatus: Codable {
+    var prerecording: Bool?
+    var enabled: Bool?
+    var active: Bool?
+    var value: Bool { prerecording ?? enabled ?? active ?? false }
+}
+
+// MARK: - Camera power / battery (`/camera/power`)
+
+/// `/camera/power` (read-only). `source` ∈ Battery/AC/Fiber/USB/POE.
+struct PowerStatus: Codable {
+    struct Battery: Codable {
+        var milliVolt: Int?
+        var chargeRemainingPercent: Int?
+        var statusFlags: [String]?
+    }
+    var source: String?
+    var milliVolt: Int?
+    var batteries: [Battery]?
+}
 
 /// `/transports/0/timecode`. The iPhone app returns preformatted strings
 /// (`display` / `timeline`); some firmware returns a BCD-packed integer instead.
@@ -136,7 +223,7 @@ struct MediaWorkingset: Codable {
         var clipCount: Int?
         var totalSpace: Int64?
         var remainingSpace: Int64?
-        var remainingRecordTime: Int?   // minutes
+        var remainingRecordTime: Int?   // seconds (codec-aware estimate)
         var activeDisk: Bool?
     }
     var size: Int?
@@ -156,7 +243,10 @@ struct ShutterMeasurement: Codable { var measurement: String }   // "ShutterAngl
 struct DynamicRangeValue: Codable { var dynamicRange: String }
 struct SupportedDynamicRanges: Codable { var supportedDynamicRanges: [String] }
 
-struct EnabledValue: Codable { var enabled: Bool }   // falseColor, frameGuide, frameGrids, safeArea, displayLUT, OIS
+struct EnabledValue: Codable { var enabled: Bool }   // falseColor, frameGuide, frameGrids, safeArea, displayLUT, OIS, cleanFeed
+
+/// `/monitoring/{display}/brightness` — per-display screen brightness (0–100).
+struct BrightnessValue: Codable { var brightness: Int }
 
 struct MonitoringDisplays: Codable { var displays: [String] }
 struct FocusAssistValue: Codable { var mode: String; var color: String?; var intensity: Int? }

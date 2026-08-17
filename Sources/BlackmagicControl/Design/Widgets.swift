@@ -59,6 +59,7 @@ extension Gradient {
 /// when recording.
 struct RecButton: View {
     let isRecording: Bool
+    var diameter: CGFloat = 116
     let action: () -> Void
     @State private var pulse = false
 
@@ -67,15 +68,16 @@ struct RecButton: View {
             ZStack {
                 Circle()
                     .fill(isRecording ? Theme.record : Theme.accent)
-                    .padding(10)
+                    .padding(diameter * 0.12)
                     .shadow(color: (isRecording ? Theme.record : Theme.accent).opacity(0.5),
                             radius: pulse ? 14 : 6)
-                Text(isRecording ? "REC" : "REC")
-                    .font(.system(size: 22, weight: .heavy))
+                Text("REC")
+                    .font(.system(size: diameter * 0.2, weight: .heavy))
                     .foregroundStyle(.black)
             }
         }
         .buttonStyle(.plain)
+        .frame(width: diameter, height: diameter)
         .onChange(of: isRecording) { _, rec in pulse = rec }
         .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
     }

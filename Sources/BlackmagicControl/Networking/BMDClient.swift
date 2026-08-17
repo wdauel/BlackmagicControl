@@ -37,18 +37,36 @@ enum Endpoint {
     static func frameGridsDisplay(_ display: String) -> String { "/monitoring/\(display)/frameGrids" }
     static func safeAreaDisplay(_ display: String) -> String { "/monitoring/\(display)/safeArea" }
     static func displayLUT(_ display: String) -> String { "/monitoring/\(display)/displayLUT" }
+    static func brightness(_ display: String) -> String { "/monitoring/\(display)/brightness" }
+    static func cleanFeed(_ display: String) -> String { "/monitoring/\(display)/cleanFeed" }
     static let frameGridsGlobal  = "/monitoring/frameGrids"
     static let safeAreaPercent   = "/monitoring/safeAreaPercent"
 
     static let iris              = "/lens/iris"
     static let focus             = "/lens/focus"
     static let doAutoFocus       = "/lens/focus/doAutoFocus"
+    static let autoFocus         = "/lens/focus/autoFocus"
+    static let autoFocusDescription = "/lens/focus/autoFocus/description"
     static let ois               = "/lens/opticalImageStabilization"
     static let zoom              = "/lens/zoom"
+    static let zoomDescription   = "/lens/zoom/description"
+    // Physical camera-module (lens) selection. Switch with `{"id": "Lens24mm"}`
+    // — `index` alone returns HTTP 500, so `id` is authoritative.
+    static let lensCameras       = "/lens/cameras"
+    static let lensCamerasActive = "/lens/cameras/active"
 
     static let record            = "/transports/0/record"
+    static let stop              = "/transports/0/stop"
+    static let proxyRecording    = "/transports/0/proxyRecording"
     static let timecode          = "/transports/0/timecode"
     static let doStillCapture    = "/transports/0/doStillCapture"
+    // Pre-record (transport cache buffer)
+    static let prerecord         = "/transports/0/prerecord"
+    static let prerecordAuto     = "/transports/0/prerecord/auto"
+    static let prerecordMaxDuration = "/transports/0/prerecord/maxDuration"
+    static let prerecordSupportedDurations = "/transports/0/prerecord/supportedMaxDurations"
+
+    static let power             = "/camera/power"
 
     static let mediaWorkingset   = "/media/workingset"
     static let mediaActive       = "/media/active"
@@ -162,6 +180,12 @@ struct BMDClient: Sendable {
     @discardableResult
     func post(_ path: String) async throws -> Data {
         try await send(path, method: "POST", body: Optional<Int>.none)
+    }
+
+    /// POST with a JSON body — e.g. `POST /transports/0/record {"clipName": ...}`.
+    @discardableResult
+    func post<B: Encodable>(_ path: String, _ body: B) async throws -> Data {
+        try await send(path, method: "POST", body: body)
     }
 
     @discardableResult
